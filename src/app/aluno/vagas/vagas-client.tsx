@@ -27,21 +27,89 @@ export function VagasClient({ jobs, appliedJobIds: initialApplied, userId }: Pro
     return jobs.filter((j) => j.tipo_funcao === filter);
   }, [jobs, filter]);
 
+  function isUniqueViolation(err: { code?: string; message?: string } | null) {
+    if (!err) return false;
+    if (err.code === "23505") return true;
+    return (err.message ?? "").toLowerCase().includes("duplicate");
+  }
+
+  async function withdrawViaRpc(
+    supabase: ReturnType<typeof createClient>,
+    jobId: string,
+  ): Promise<{ count: number; error: { message: string } | null }> {
+    const { data, error } = await supabase.rpc("withdraw_application", {
+      p_job_id: jobId,
+    });
+    if (error) return { count: 0, error: { message: error.message } };
+    const n = typeof data === "number" ? data : Number(data);
+    return { count: Number.isFinite(n) ? n : 0, error: null };
+  }
+
   async function candidatar(jobId: string) {
     setError(null);
     setLoadingId(jobId);
     const supabase = createClient();
-    const { error: insError } = await supabase.from("applications").insert({
+    const payload = {
       job_id: jobId,
       user_id: userId,
-      status: "aplicado",
-    });
+      status: "aplicado" as const,
+    };
+
+    let { error: insError } = await supabase.from("applications").insert(payload);
+
+    if (isUniqueViolation(insError)) {
+      const { count, error: wErr } = await withdrawViaRpc(supabase, jobId);
+      if (wErr) {
+        setLoadingId(null);
+        setError(wErr.message);
+        return;
+      }
+      if (count > 0) {
+        ({ error: insError } = await supabase.from("applications").insert(payload));
+      } else {
+        insError = {
+          message:
+            "Já existe candidatura para esta vaga, mas não foi possível limpar o registro anterior. Atualize a página ou peça ao administrador para aplicar a migração withdraw_application no Supabase.",
+        };
+      }
+    }
+
     setLoadingId(null);
     if (insError) {
       setError(insError.message);
       return;
     }
     setApplied((prev) => new Set(prev).add(jobId));
+  }
+
+  async function desistir(jobId: string) {
+    if (
+      !window.confirm(
+        "Deseja retirar sua candidatura desta vaga? Você poderá se candidatar novamente depois.",
+      )
+    ) {
+      return;
+    }
+    setError(null);
+    setLoadingId(jobId);
+    const supabase = createClient();
+    const { count, error: wErr } = await withdrawViaRpc(supabase, jobId);
+    setLoadingId(null);
+    if (wErr) {
+      setError(wErr.message);
+      return;
+    }
+    if (count < 1) {
+      setError(
+        "Não foi possível retirar a candidatura. Atualize a página. Se o erro continuar, aplique no Supabase a migração withdraw_application (função RPC).",
+      );
+      return;
+    }
+    setApplied((prev) => {
+      const next = new Set(prev);
+      next.delete(jobId);
+      return next;
+    });
   }
 
   return (
@@ -93,14 +161,32 @@ export function VagasClient({ jobs, appliedJobIds: initialApplied, userId }: Pro
                       {job.tipo_funcao}
                     </span>
                   </div>
-                  <button
-                    type="button"
-                    disabled={ja || loadingId === job.id}
-                    onClick={() => void candidatar(job.id)}
-                    className="mt-2 shrink-0 rounded-lg bg-emerald-600 px-4 py-2 text-sm font-medium text-white hover:bg-emerald-700 disabled:cursor-not-allowed disabled:opacity-50 sm:mt-0"
-                  >
-                    {ja ? "Candidatura enviada" : loadingId === job.id ? "Enviando…" : "Candidatar-se"}
-                  </button>
+                  <div className="mt-2 flex shrink-0 flex-col items-stretch gap-2 sm:mt-0 sm:items-end">
+                    {ja ? (
+                      <>
+                        <span className="rounded-lg border border-emerald-200 bg-emerald-50 px-4 py-2 text-center text-sm font-medium text-emerald-800 dark:border-emerald-900 dark:bg-emerald-950/50 dark:text-emerald-200">
+                          Candidatura enviada
+                        </span>
+                        <button
+                          type="button"
+                          disabled={loadingId === job.id}
+                          onClick={() => void desistir(job.id)}
+                          className="rounded-lg border border-zinc-300 bg-white px-4 py-2 text-sm font-medium text-zinc-700 hover:bg-zinc-50 disabled:cursor-not-allowed disabled:opacity-50 dark:border-zinc-600 dark:bg-zinc-900 dark:text-zinc-200 dark:hover:bg-zinc-800"
+                        >
+                          {loadingId === job.id ? "Processando…" : "Desistir da candidatura"}
+                        </button>
+                      </>
+                    ) : (
+                      <button
+                        type="button"
+                        disabled={loadingId === job.id}
+                        onClick={() => void candidatar(job.id)}
+                        className="rounded-lg bg-emerald-600 px-4 py-2 text-sm font-medium text-white hover:bg-emerald-700 disabled:cursor-not-allowed disabled:opacity-50"
+                      >
+                        {loadingId === job.id ? "Enviando…" : "Candidatar-se"}
+                      </button>
+                    )}
+                  </div>
                 </div>
                 <p className="mt-3 whitespace-pre-wrap text-sm text-zinc-600 dark:text-zinc-400">
                   {job.descricao}
