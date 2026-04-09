@@ -67,10 +67,11 @@ export function VagasClient({ jobs, appliedJobIds: initialApplied, userId }: Pro
       if (count > 0) {
         ({ error: insError } = await supabase.from("applications").insert(payload));
       } else {
-        insError = {
-          message:
-            "Já existe candidatura para esta vaga, mas não foi possível limpar o registro anterior. Atualize a página ou peça ao administrador para aplicar a migração withdraw_application no Supabase.",
-        };
+        setLoadingId(null);
+        setError(
+          "Já existe candidatura para esta vaga, mas não foi possível limpar o registro anterior. Atualize a página ou peça ao administrador para aplicar a migração withdraw_application no Supabase.",
+        );
+        return;
       }
     }
 
